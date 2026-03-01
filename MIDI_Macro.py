@@ -8,6 +8,7 @@ import ctypes
 import json
 import os
 import difflib
+import queue
 
 current_port = None
 listening = False
@@ -19,6 +20,7 @@ feedback_warning_shown = False
 macros = {}
 active_macro_dialog = None
 macro_list_index_map = {}
+output_queue = queue.Queue()
 
 KEYEVENTF_KEYUP = 0x0002
 user32 = ctypes.windll.user32
@@ -60,10 +62,21 @@ def get_default_documents_dir():
 
 
 def log_to_output(message):
-    if "output_box" not in globals():
-        return
-    output_box.insert(tk.END, f"{message}\n")
-    output_box.see(tk.END)
+    output_queue.put(f"{message}\n")
+
+
+def flush_output_queue():
+    if "output_box" in globals():
+        chunk = []
+        while not output_queue.empty() and len(chunk) < 200:
+            chunk.append(output_queue.get_nowait())
+
+        if chunk:
+            output_box.insert(tk.END, "".join(chunk))
+            output_box.see(tk.END)
+
+    if "root" in globals():
+        root.after(40, flush_output_queue)
 
 
 def normalize_port_name(name):
@@ -233,8 +246,7 @@ def run_macro_keys(keys):
     for key in keys:
         vk_code = keysym_to_vk(key)
         if vk_code is None:
-            output_box.insert(tk.END, f"Cannot type unsupported key: {key}\n")
-            output_box.see(tk.END)
+            log_to_output(f"Cannot type unsupported key: {key}")
             return
         vk_codes.append(vk_code)
 
@@ -314,12 +326,14 @@ def process_macro_binding(message):
     global active_macro_dialog
 
     if active_macro_dialog and active_macro_dialog.midi_binding_key is None:
-        if active_macro_dialog.handle_midi_message(message):
-            return True
+        if "root" in globals():
+            root.after(0, lambda m=message, d=active_macro_dialog: d.handle_midi_message(m) if d.window.winfo_exists() else None)
+        return True
 
     binding_key, _ = get_midi_binding(message)
     if binding_key in macros:
-        highlight_macro_entry(binding_key)
+        if "root" in globals():
+            root.after(0, lambda k=binding_key: highlight_macro_entry(k))
         trigger_macro(binding_key)
 
     return False
@@ -376,11 +390,9 @@ def save_macro_mapping():
     try:
         with open(file_path, "w", encoding="utf-8") as file:
             json.dump(macros, file, indent=2)
-        output_box.insert(tk.END, f"Macro mapping saved: {file_path}\n")
-        output_box.see(tk.END)
+        log_to_output(f"Macro mapping saved: {file_path}")
     except Exception as e:
-        output_box.insert(tk.END, f"Error saving macro mapping: {e}\n")
-        output_box.see(tk.END)
+        log_to_output(f"Error saving macro mapping: {e}")
 
 
 def load_macro_mapping():
@@ -413,11 +425,9 @@ def load_macro_mapping():
         macros.update(loaded_macros)
         refresh_macro_list()
         sync_macro_leds()
-        output_box.insert(tk.END, f"Macro mapping loaded: {file_path}\n")
-        output_box.see(tk.END)
+        log_to_output(f"Macro mapping loaded: {file_path}")
     except Exception as e:
-        output_box.insert(tk.END, f"Error loading macro mapping: {e}\n")
-        output_box.see(tk.END)
+        log_to_output(f"Error loading macro mapping: {e}")
 
 def refresh_devices():
     devices = get_midi_devices()
@@ -467,7 +477,7 @@ def start_listening():
         start_idle_macro_listener()
         start_button.config(state="normal")
         stop_button.config(state="disabled")
-        output_box.insert(tk.END, f"Error opening device: {e}\n")
+        log_to_output(f"Error opening device: {e}")
 
 def stop_listening():
     global listening, current_port
@@ -484,7 +494,11 @@ def stop_listening():
 def listen_to_midi():
     global listening
     while listening:
-        for message in current_port.iter_pending():
+        pending_messages = list(current_port.iter_pending())
+        if not pending_messages:
+            time.sleep(0.002)
+            continue
+        for message in pending_messages:
             handle_message(message)
 
 
@@ -634,8 +648,7 @@ class MacroDialog:
         macros[self.midi_binding_key] = list(self.keys)
         refresh_macro_list()
         set_led_for_binding(self.midi_binding_key, turn_on=True)
-        output_box.insert(tk.END, f"Saved macro: {self.midi_binding_key} -> {self.keys}\n")
-        output_box.see(tk.END)
+        log_to_output(f"Saved macro: {self.midi_binding_key} -> {self.keys}")
         self.cancel()
 
     def reset(self):
@@ -672,8 +685,7 @@ def handle_message(message):
         text = f"CButton-{message.control} Pressed!\n"
 
     if text:
-        output_box.insert(tk.END, text)
-        output_box.see(tk.END)
+        log_to_output(text.strip())
 
 # ---- GUI ----
 root = tk.Tk()
@@ -761,5 +773,6 @@ output_box.pack(pady=10)
 refresh_devices()
 refresh_macro_list()
 start_idle_macro_listener()
+flush_output_queue()
 
 root.mainloop()
