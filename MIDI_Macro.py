@@ -72,8 +72,10 @@ def flush_output_queue():
             chunk.append(output_queue.get_nowait())
 
         if chunk:
+            output_box.config(state="normal")
             output_box.insert(tk.END, "".join(chunk))
             output_box.see(tk.END)
+            output_box.config(state="disabled")
 
     if "root" in globals():
         root.after(40, flush_output_queue)
@@ -769,6 +771,7 @@ status_label.pack(pady=5)
 # Text box to display MIDI messages
 output_box = tk.Text(main_tab, height=12, width=70)
 output_box.pack(pady=10)
+output_box.config(state="disabled")
 
 refresh_devices()
 refresh_macro_list()
